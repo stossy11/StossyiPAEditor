@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IPA Modifier</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        /* General Body Styling */
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            background-color: #f4f4f9;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            min-height: 100vh;
+        }
+
+        h1 {
+            margin-top: 0;
+            color: #333;
+        }
+
+        label {
+            font-weight: bold;
+            display: block;
+            margin-bottom: 5px;
+        }
+
+        input[type="file"],
+        input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 15px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+
+        button {
+            background-color: #007BFF;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        #editor {
+            width: 100%;
+            max-width: 500px;
+            margin-top: 20px;
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        #uploadBtn {
+            margin-bottom: 20px;
+        }
+
+        #editor h2 {
+            margin-top: 0;
+            color: #444;
+        }
+
+        @media (max-width: 768px) {
+            body {
+                padding: 10px;
+            }
+
+            input[type="file"],
+            input[type="text"],
+            button {
+                font-size: 14px;
+            }
+
+            button {
+                padding: 8px 12px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1>IPA Modifier</h1>
+    <label for="ipaFile">Upload .ipa File:</label>
+    <input type="file" id="ipaFile" accept=".ipa">
+    <button id="uploadBtn">Upload & Extract</button>
+
+    <div id="editor" style="display: none;">
+        <h2>Edit Info.plist</h2>
+        <label for="displayName">Display Name:</label>
+        <input type="text" id="displayName" placeholder="Enter new display name">
+
+        <label for="extensions">Keys to Remove (comma-separated):</label>
+        <input type="text" id="extensions" placeholder="Enter keys to remove">
+
+        <button id="saveBtn">Save & Download</button>
+    </div>
+
+    <script>
+        // Handle .ipa file upload and modification
+        document.getElementById('uploadBtn').addEventListener('click', async () => {
+            const ipaFile = document.getElementById('ipaFile').files[0];
+            if (!ipaFile) {
+                alert('Please select an IPA file.');
+                return;
+            }
+
+            const zip = new JSZip();
+            const zipContent = await zip.loadAsync(ipaFile);
+
+            // Locate the Info.plist file
+            const payloadFolder = Object.keys(zipContent.files).find(name => name.startsWith('Payload/'));
+            if (!payloadFolder) {
+                alert('Invalid IPA structure: No Payload folder found.');
+                return;
+            }
+
+            const appFolder = Object.keys(zipContent.files).find(name => name.startsWith(`${payloadFolder}`) && name.endsWith('.app/'));
+            if (!appFolder) {
+                alert('Invalid IPA structure: No .app folder found.');
+                return;
+            }
+
+            const infoPlistPath = `${appFolder}Info.plist`;
+            const infoPlistContent = await zip.file(infoPlistPath).async('string');
+
+            // Parse Info.plist as XML
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(infoPlistContent, "application/xml");
+
+            // Find CFBundleDisplayName
+            const keys = xmlDoc.getElementsByTagName('key');
+            let displayNameKey = null;
+            let displayNameValue = null;
+
+            for (let i = 0; i < keys.length; i++) {
+                if (keys[i].textContent === 'CFBundleDisplayName') {
+                    displayNameKey = keys[i];
+                    displayNameValue = keys[i].nextElementSibling;
+                    break;
+                }
+            }
+
+            // Populate the editor with the existing display name
+            document.getElementById('displayName').value = displayNameValue ? displayNameValue.textContent : '';
+            document.getElementById('editor').style.display = 'block';
+
+            // Save Button: Modify and download the updated IPA
+            document.getElementById('saveBtn').addEventListener('click', async () => {
+                const newDisplayName = document.getElementById('displayName').value;
+                const keysToRemove = document.getElementById('extensions').value.split(',').map(k => k.trim());
+
+                // Update CFBundleDisplayName
+                if (displayNameValue) {
+                    displayNameValue.textContent = newDisplayName;
+                } else {
+                    // Add CFBundleDisplayName if it doesn't exist
+                    const dict = xmlDoc.getElementsByTagName('dict')[0];
+                    const newKey = xmlDoc.createElement('key');
+                    newKey.textContent = 'CFBundleDisplayName';
+                    const newString = xmlDoc.createElement('string');
+                    newString.textContent = newDisplayName;
+                    dict.appendChild(newKey);
+                    dict.appendChild(newString);
+                }
+
+                // Remove specified keys
+                keysToRemove.forEach((keyToRemove) => {
+                    for (let i = 0; i < keys.length; i++) {
+                        if (keys[i].textContent === keyToRemove) {
+                            const valueToRemove = keys[i].nextElementSibling;
+                            keys[i].parentNode.removeChild(keys[i]); // Remove the key
+                            if (valueToRemove) {
+                                valueToRemove.parentNode.removeChild(valueToRemove); // Remove the associated value
+                            }
+                            break;
+                        }
+                    }
+                });
+
+                // Serialize XML back to a string
+                const serializer = new XMLSerializer();
+                const updatedPlistContent = serializer.serializeToString(xmlDoc);
+
+                // Replace the Info.plist file in the ZIP
+                zip.file(infoPlistPath, updatedPlistContent);
+
+                // Repackage IPA and provide download link
+                const modifiedIpaBlob = await zip.generateAsync({ type: 'blob' });
+                const downloadLink = document.createElement('a');
+                downloadLink.href = URL.createObjectURL(modifiedIpaBlob);
+                downloadLink.download = 'modified.ipa';
+                downloadLink.click();
+            });
+        });
+    </script>
+</body>
+</html>
